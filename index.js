@@ -3,13 +3,14 @@ const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
-const fs = require("fs");
+const fs = require("fs").promises; // Changed to use promise-based fs
 const {
   GoogleGenerativeAI,
   HarmCategory,
   HarmBlockThreshold,
 } = require("@google/generative-ai");
 const { GoogleAIFileManager } = require("@google/generative-ai/server");
+const addImageMetadata = require("./helpers/metadata-generator");
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -25,7 +26,15 @@ app.use(
   })
 );
 
-const upload = multer({ dest: "uploads/" });
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: "uploads/",
+    filename: (req, file, cb) => {
+      cb(null, file.originalname);
+    },
+  }),
+});
+
 const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 const generationConfig = {
   temperature: 1,
@@ -62,68 +71,6 @@ const safetySettings = [
   },
 ];
 
-// API for single image SEO generation
-app.post("/generate-seo/single", upload.single("image"), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded." });
-    }
-
-    const file = await uploadToGemini(req.file.path, req.file.mimetype);
-    const prompt = `Generate SEO friendly title, description, and 50 keywords as a JSON object for the following image. Only return the JSON. Do not include any other text.
-        {
-          "title": "generated title",
-          "description": "generated description",
-          "keywords": ["keyword1", "keyword2", ...]
-        }
-    `;
-    const chatSession = model.startChat({
-      generationConfig,
-      safetySettings,
-      history: [
-        {
-          role: "user",
-          parts: [
-            {
-              fileData: {
-                mimeType: file.mimeType,
-                fileUri: file.uri,
-              },
-            },
-            { text: prompt },
-          ],
-        },
-      ],
-    });
-
-    const result = await chatSession.sendMessage(
-      "Generate SEO details, returning only a JSON object."
-    );
-    fs.unlinkSync(req.file.path); // Remove local file after processing
-
-    try {
-      const jsonResponse = result.response.text();
-      const cleanedResponse = jsonResponse
-        .replace(/^```json/, "")
-        .replace(/```$/, "")
-        .trim();
-
-      const parsedJson = JSON.parse(cleanedResponse);
-      res.json(parsedJson);
-    } catch (parseError) {
-      console.error("JSON parsing error:", parseError);
-      console.error("Raw response from Gemini:", result.response.text());
-      return res.status(500).json({
-        error: "Failed to parse JSON response. " + parseError.message,
-      });
-    }
-  } catch (error) {
-    console.error("Gemini API error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API for multiple images SEO generation (max 10 images)
 app.post(
   "/generate-seo/multiple",
   upload.array("images", 10),
@@ -133,10 +80,14 @@ app.post(
         return res.status(400).json({ error: "No files uploaded." });
       }
 
+      console.log(
+        "Uploaded Files:",
+        req.files.map((file) => file.originalname)
+      );
+
+      // Upload to Gemini AI and get metadata
       const uploadedFiles = await Promise.all(
-        req.files.map(async (file) => {
-          return await uploadToGemini(file.path, file.mimetype);
-        })
+        req.files.map(async (file) => uploadToGemini(file.path, file.mimetype))
       );
 
       const prompt = `Generate SEO friendly title, description, and 50 keywords for each image as a JSON array of objects.  Only return the JSON. Do not include any other text. Each object in the array should have the following structure:
@@ -173,31 +124,36 @@ app.post(
         ],
       });
 
-      const result = await chatSession.sendMessage(
-        "Generate SEO details, returning only a JSON array."
+      const result = await chatSession.sendMessage("Generate SEO metadata.");
+      const jsonResponse = await result.response.text();
+      const cleanedResponse = jsonResponse
+        .replace(/^```json/, "")
+        .replace(/```$/, "")
+        .trim();
+      const metadataArray = JSON.parse(cleanedResponse);
+
+      // Process images with metadata
+      const processedImages = await Promise.all(
+        req.files.map(async (file, index) => {
+          const metadata = metadataArray[index];
+          const outputImage = await addImageMetadata(file.path, metadata);
+          return {
+            path: outputImage.outputPath,
+            ...metadata,
+          };
+        })
       );
-      req.files.forEach((file) => fs.unlinkSync(file.path)); // Remove local files after processing
 
-      try {
-        const jsonResponse = result.response.text();
-        const cleanedResponse = jsonResponse
-          .replace(/^```json/, "")
-          .replace(/```$/, "")
-          .trim();
-
-        const parsedJson = JSON.parse(cleanedResponse);
-        console.log(parsedJson);
-        res.status(200).json(parsedJson);
-      } catch (parseError) {
-        console.error("JSON parsing error:", parseError);
-        console.error("Raw response from Gemini:", result.response.text());
-        return res.status(500).json({
-          error: "Failed to parse JSON response. " + parseError.message,
-        });
-      }
+      res.status(200).json(processedImages);
     } catch (error) {
-      console.error("Gemini API error:", error);
+      console.error("Error processing images:", error);
       res.status(500).json({ error: error.message });
+    } finally {
+      try {
+        await Promise.all(req.files.map((file) => fs.unlink(file.path)));
+      } catch (err) {
+        console.warn("Cleanup error:", err.message);
+      }
     }
   }
 );
@@ -205,20 +161,3 @@ app.post(
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
 });
-
-const addImageMetadata = require("./helpers/metadata-generator");
-
-async function example() {
-  try {
-    const result = await addImageMetadata("./uploads/test.jpg", {
-      title: "Beautiful Sunset",
-      description: "A stunning sunset captured at the beach",
-      keywords: ["sunset", "beach", "nature", "photography"],
-    });
-
-    console.log(result);
-  } catch (error) {
-    console.error(error);
-  }
-}
-example();

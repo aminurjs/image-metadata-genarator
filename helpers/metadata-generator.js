@@ -1,5 +1,4 @@
 const sharp = require("sharp");
-const ExifReader = require("exifreader");
 const fs = require("fs/promises");
 const path = require("path");
 
@@ -7,14 +6,10 @@ const path = require("path");
  * Adds or updates metadata for various image formats
  * @param {string} imagePath - Path to the image file
  * @param {Object} metadata - Metadata to be added
- * @param {string} metadata.title - Image title
- * @param {string} metadata.description - Image description
- * @param {string[]} metadata.keywords - Array of keywords/tags
  * @returns {Promise<Object>} - Object containing status and output path
  */
 async function addImageMetadata(imagePath, metadata) {
   try {
-    // Validate inputs
     if (!imagePath || !metadata) {
       throw new Error("Image path and metadata are required");
     }
@@ -24,12 +19,21 @@ async function addImageMetadata(imagePath, metadata) {
 
     // Get file extension
     const ext = path.extname(imagePath).toLowerCase();
-    const outputPath = path.join(
-      path.dirname(imagePath),
-      `${path.basename(imagePath, ext)}_with_metadata${ext}`
-    );
 
-    // Handle different image formats
+    if (!ext) {
+      throw new Error(`File has no extension: ${imagePath}`);
+    }
+
+    const supportedFormats = [".jpg", ".jpeg", ".png", ".webp", ".tiff"];
+    if (!supportedFormats.includes(ext)) {
+      throw new Error(`Unsupported image format: ${ext}`);
+    }
+
+    const outputDir = path.join(path.dirname(imagePath), "processed");
+    await fs.mkdir(outputDir, { recursive: true });
+
+    const outputPath = path.join(outputDir, path.basename(imagePath));
+
     switch (ext) {
       case ".jpg":
       case ".jpeg":
@@ -44,15 +48,9 @@ async function addImageMetadata(imagePath, metadata) {
       case ".tiff":
         await handleTiffMetadata(imagePath, outputPath, metadata);
         break;
-      default:
-        throw new Error(`Unsupported image format: ${ext}`);
     }
 
-    return {
-      status: "success",
-      outputPath,
-      message: "Metadata added successfully",
-    };
+    return { status: "success", outputPath, message: "Metadata added" };
   } catch (error) {
     throw new Error(`Failed to add metadata: ${error.message}`);
   }
@@ -65,7 +63,6 @@ async function addImageMetadata(imagePath, metadata) {
 async function handleJpegMetadata(inputPath, outputPath, metadata) {
   const image = sharp(inputPath);
 
-  // Prepare EXIF metadata
   const exifMetadata = {
     IFD0: {
       ImageDescription: metadata.description,
@@ -74,7 +71,6 @@ async function handleJpegMetadata(inputPath, outputPath, metadata) {
     },
   };
 
-  // Prepare IPTC metadata
   const iptcMetadata = {
     ObjectName: metadata.title,
     Caption: metadata.description,
@@ -82,10 +78,7 @@ async function handleJpegMetadata(inputPath, outputPath, metadata) {
   };
 
   await image
-    .withMetadata({
-      exif: exifMetadata,
-      iptc: iptcMetadata,
-    })
+    .withMetadata({ exif: exifMetadata, iptc: iptcMetadata })
     .toFile(outputPath);
 }
 
@@ -95,21 +88,13 @@ async function handleJpegMetadata(inputPath, outputPath, metadata) {
  */
 async function handlePngMetadata(inputPath, outputPath, metadata) {
   const image = sharp(inputPath);
-
-  // PNG text chunks
   const pngMetadata = {
     Title: metadata.title,
     Description: metadata.description,
     Keywords: metadata.keywords.join(", "),
   };
 
-  await image
-    .withMetadata({
-      png: {
-        text: pngMetadata,
-      },
-    })
-    .toFile(outputPath);
+  await image.withMetadata({ png: { text: pngMetadata } }).toFile(outputPath);
 }
 
 /**
@@ -118,21 +103,13 @@ async function handlePngMetadata(inputPath, outputPath, metadata) {
  */
 async function handleWebPMetadata(inputPath, outputPath, metadata) {
   const image = sharp(inputPath);
-
-  // WebP container metadata
   const webpMetadata = {
     Title: metadata.title,
     Description: metadata.description,
     Keywords: metadata.keywords.join(", "),
   };
 
-  await image
-    .withMetadata({
-      webp: {
-        xmp: webpMetadata,
-      },
-    })
-    .toFile(outputPath);
+  await image.withMetadata({ webp: { xmp: webpMetadata } }).toFile(outputPath);
 }
 
 /**
@@ -141,19 +118,13 @@ async function handleWebPMetadata(inputPath, outputPath, metadata) {
  */
 async function handleTiffMetadata(inputPath, outputPath, metadata) {
   const image = sharp(inputPath);
-
-  // TIFF tags
   const tiffMetadata = {
     ImageDescription: metadata.description,
     DocumentName: metadata.title,
     Keywords: metadata.keywords.join(";"),
   };
 
-  await image
-    .withMetadata({
-      tiff: tiffMetadata,
-    })
-    .toFile(outputPath);
+  await image.withMetadata({ tiff: tiffMetadata }).toFile(outputPath);
 }
 
 module.exports = addImageMetadata;
