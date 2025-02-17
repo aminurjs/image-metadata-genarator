@@ -2,7 +2,6 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
-const rimraf = require("rimraf");
 const path = require("path");
 const fs = require("fs").promises; // Changed to use promise-based fs
 const {
@@ -88,9 +87,11 @@ app.post(
 
       // Upload to Gemini AI and get metadata
       const uploadedFiles = await Promise.all(
-        req.files.map(async (file) => uploadToGemini(file.path, file.mimetype))
+        req.files.map(async (file) => {
+          console.log(file.mimeType);
+          return uploadToGemini(file.path, file.mimetype);
+        })
       );
-
       const prompt = `Generate SEO friendly title, description, and keywords(single word) for each image.  Only return the JSON. Do not include any other text. Each object in the array should have the following structure:
         [
           {
@@ -153,17 +154,6 @@ app.post(
       res.status(500).json({ error: error.message });
     } finally {
       try {
-        // Use rimraf to delete files
-        for (const file of req.files) {
-          const filePath = path.resolve(file.path);
-          rimraf(filePath, (err) => {
-            if (err) {
-              console.warn(`Failed to delete ${filePath}:`, err.message);
-            } else {
-              console.log(`Successfully deleted: ${filePath}`);
-            }
-          });
-        }
       } catch (err) {
         console.warn("Cleanup failed:", err.message);
       }
